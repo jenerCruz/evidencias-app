@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Evidencias de entradas y salidas</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 680px; margin: 2rem auto; padding: 0 1rem; }
+    fieldset { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; }
+    label { display: block; margin: .6rem 0 .2rem; font-weight: 600; }
+    input, select, textarea, button { width: 100%; padding: .6rem; margin-bottom: .8rem; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .ok { color: #0a7; }
+    .err { color: #c33; }
+  </style>
+</head>
+<body>
+  <h1>Evidencias de asistencia</h1>
+  <p>Sube una evidencia de entrada o salida. Los archivos deben ser imágenes o PDF (máx. 25 MB).</p>
+
+  <fieldset>
+    <legend>Nueva evidencia</legend>
+    <div class="row">
+      <div>
+        <label for="empleado">Empleado</label>
+        <select id="empleado" required></select>
+      </div>
+      <div>
+        <label for="tipo">Tipo</label>
+        <select id="tipo" required>
+          <option value="entrada">Entrada</option>
+          <option value="salida">Salida</option>
+        </select>
+      </div>
+    </div>
+    <label for="archivo">Archivo</label>
+    <input id="archivo" type="file" accept=".jpg,.jpeg,.png,.heic,.pdf" required />
+    <label for="notas">Notas (opcional)</label>
+    <textarea id="notas" rows="3" placeholder="Lugar, motivo, detalles útiles"></textarea>
+    <button id="enviar">Enviar evidencia</button>
+    <p id="msg"></p>
+  </fieldset>
+
+  <script>
+    const EMPLOYEES_URL = 'employees.json'; // relativo a docs/
+    const BACKEND_URL = 'https://TU-DOMINIO-DEL-BACKEND.example.com/api/upload';
+
+    const $empleado = document.getElementById('empleado');
+    const $tipo = document.getElementById('tipo');
+    const $archivo = document.getElementById('archivo');
+    const $notas = document.getElementById('notas');
+    const $enviar = document.getElementById('enviar');
+    const $msg = document.getElementById('msg');
+
+    async function loadEmployees() {
+      try {
+        const res = await fetch(EMPLOYEES_URL, { cache: 'no-store' });
+        const list = await res.json();
+        $empleado.innerHTML = '<option value="">Selecciona…</option>' +
+          list.map(e => `<option value="${e.id}">${e.nombre} (${e.id})</option>`).join('');
+      } catch (e) {
+        $msg.textContent = 'No se pudieron cargar los empleados.';
+        $msg.className = 'err';
+      }
+    }
+
+    function toBase64(file) {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result.split(',')[1]);
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+    }
+
+    function sanitizeName(name) {
+      return name.toLowerCase().replace(/[^\w.\-]+/g, '_').replace(/_+/g, '_').slice(0, 120);
+    }
+
+    $enviar.addEventListener('click', async () => {
+      $msg.textContent = '';
+      $msg.className = '';
+      try {
+        if (!$empleado.value) throw new Error('Selecciona el empleado.');
+        if (!$tipo.value) throw new Error('Selecciona el tipo.');
+        const file = $archivo.files[0];
+        if (!file) throw new Error('Selecciona el archivo.');
+        if (file.size > 25 * 1024 * 1024) throw new Error('El archivo excede 25 MB.');
+        const extOk = ['jpg','jpeg','png','heic','pdf'].includes(file.name.split('.').pop().toLowerCase());
+        if (!extOk) throw new Error('Extensión no permitida.');
+        const contentB64 = await toBase64(file);
+        const payload = {
+          empleadoId: $empleado.value,
+          tipo: $tipo.value,
+          notas: ($notas.value || '').trim(),
+          filename: sanitizeName(file.name),
+          contentBase64: contentB64
+        };
+        $enviar.disabled = true;
+        $enviar.textContent = 'Enviando…';
+        const res = await fetch(BACKEND_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.message || 'Error al subir la evidencia.');
+        $msg.innerHTML = `Evidencia enviada. Revisión en PR: <a href="${data.prUrl}" target="_blank" rel="noreferrer">${data.prUrl}</a>`;
+        $msg.className = 'ok';
+        $archivo.value = '';
+        $notas.value = '';
+      } catch (err) {
+        $msg.textContent = err.message || String(err);
+        $msg.className = 'err';
+      } finally {
+        $enviar.disabled = false;
+        $enviar.textContent = 'Enviar evidencia';
+      }
+    });
+
+    loadEmployees();
+  </script>
+</body>
+</html>
