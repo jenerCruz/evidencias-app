@@ -1,0 +1,94 @@
+name: Validar y aprobar evidencias
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'evidencias/**'
+
+jobs:
+  validar:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Identificar archivos cambiados de evidencias
+        id: cambios
+        run: |
+          base="origin/${{ github.base_ref }}"
+          head="origin/${{ github.head_ref }}"
+          git fetch origin "${{ github.base_ref }}" "${{ github.head_ref }}" --depth=1
+          files=$(git diff --name-only "$base".."$head" | grep '^evidencias/' || true)
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$files" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          count=$(echo "$files" | sed '/^\s*$/d' | wc -l)
+          echo "count=$count" >> $GITHUB_OUTPUT
+
+      - name: Validar estructura y tamaño
+        if: steps.cambios.outputs.count != '0'
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            # Regla de ruta: evidencias/<empleado>/<YYYY-MM-DD>/<tipo>-<HHMMSS>-<archivo>
+            if ! echo "$f" | grep -E '^evidencias/[a-z0-9_\-]+/[0-9]{4}-[0-9]{2}-[0-9]{2}/(entrada|salida)-[0-9]{6}-.+' >/dev/null; then
+              echo "Ruta inválida: $f"; fail=1
+            fi
+            if [ -f "$f" ]; then
+              size=$(wc -c < "$f")
+              if [ "$size" -gt 26214400 ]; then
+                echo "Archivo demasiado grande (>25MB): $f"; fail=1
+              fi
+              case "$f" in
+                *.jpg|*.jpeg|*.png|*.heic|*.pdf|*.json) : ;;
+                *) echo "Extensión no permitida: $f"; fail=1 ;;
+              esac
+            fi
+          done <<< "${{ steps.cambios.outputs.files }}"
+          exit $fail
+
+      - name: Aprobar y fusionar si pasa
+        if: success() && steps.cambios.outputs.count != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo, number } = context.issue;
+            await github.pulls.createReview({ owner, repo, pull_number: number, event: "APPROVE" });
+            await github.pulls.merge({ owner, repo, pull_number: number, merge_method: "squash" });
+
+      - name: Notificar por email (éxito)
+        if: success() && steps.cambios.outputs.count != '0'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USER }}
+          password: ${{ secrets.SMTP_PASS }}
+          subject: "Evidencia aprobada y fusionada #${{ github.event.pull_request.number }}"
+          to: ${{ secrets.NOTIFY_EMAIL }}
+          from: "Asistencias <no-reply@asistencias.local>"
+          body: |
+            PR: ${{ github.event.pull_request.html_url }}
+            Título: ${{ github.event.pull_request.title }}
+            Autor: ${{ github.event.pull_request.user.login }}
+
+      - name: Notificar por email (fallo)
+        if: failure() && steps.cambios.outputs.count != '0'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USER }}
+          password: ${{ secrets.SMTP_PASS }}
+          subject: "Evidencia rechazada #${{ github.event.pull_request.number }}"
+          to: ${{ secrets.NOTIFY_EMAIL }}
+          from: "Asistencias <no-reply@asistencias.local>"
+          body: |
+            La validación falló. Revisa el PR: ${{ github.event.pull_request.html_url }}
